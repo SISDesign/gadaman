@@ -1,43 +1,20 @@
 """
-================================================================================
-PIXEL QUEST: STUDENT ASCII-TO-PYGAME ENGINE
-Historical Campaign: The Peloponnesian War (425 BCE)
-================================================================================
-
-HOW TO USE THIS TEMPLATE:
-1. Edit SECTION 1 below to write your own story acts and draw your own horizontal
-   ASCII levels using the symbol legend.
-2. Drop custom .gif files into the 'assets/' folder to customize sprites.
-3. Everything runs from this single file. No separate story.py needed!
-
-CONTROLS:
-  - Move:        A / D or LEFT / RIGHT
-  - Jump:        W or UP or SPACE
-  - Attack:      F or J or LEFT-CLICK (defeats patrolling sentries)
-  - Continue:    SPACE / ENTER (during story dialogues)
-  - Restart Act: R (on Game Over)
-
-STUDENT ASCII SYMBOL LEGEND:
-  '#'  -> Impassable Outer Border / High Wall (Stone tile)
-  '='  -> Walkable Stone Platform (Stone tile)
-  '~'  -> Olive Bush Cover (Automated stealth; hero crouches and cannot be spotted)
-  'x'  -> Danger Zone / Spike Trap (Loses 1 Heart; keep moving with i-frame flashing)
-  '*'  -> Spartan Sentry / Guard (Patrols horizontally; attack to defeat or bypass in stealth)
-  '$'  -> Mission Objective / Scytale Cipher (Must collect to unlock exit)
-  'E'  -> Exit Gateway / Trireme Harbor (Advances to the next act)
-  '@'  -> Hero Starting Position (Spawns Hero)
-  ' '  -> Open Air / Sky (Empty space for jumping and parkour)
-================================================================================
+PIXEL QUEST: ASCII-TO-PYGAME ENGINE
+Educational Platformer Framework — 3-Act Campaign
 """
 
-import pygame
-import sys
 import os
+import sys
+import pygame
 from PIL import Image, ImageSequence
+
+# Suppress ALSA warnings in headless/cloud environments
+os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 # ==============================================================================
 # SECTION 1: STUDENT CUSTOMIZATION ZONE (STORY & ASCII LEVEL DESIGN)
 # ==============================================================================
+
 STUDENT_ACTS = [
     # --------------------------------------------------------------------------
     # ACT I: COASTAL LANDFALL (Sphacteria Island, 425 BCE)
@@ -159,24 +136,50 @@ COLOR_HEART_EMPTY = (70, 70, 75)
 
 
 # ==============================================================================
-# SECTION 3: PILLOW GIF EXTRACTOR & ANIMATION HANDLER
+# SECTION 3: GIF LOADER & BOTTOM-BASELINE ANCHORING
 # ==============================================================================
 class AnimatedGif:
-    def __init__(self, filepath, target_size, frame_delay=6):
+    def __init__(self, filepath, target_size, frame_delay=6, align_to_bottom=False):
         self.frames = []
         self.current_frame = 0
         self.counter = 0
         self.frame_delay = frame_delay
+        tw, th = target_size
 
         if os.path.exists(filepath):
             try:
                 pil_img = Image.open(filepath)
                 for frame in ImageSequence.Iterator(pil_img):
-                    frame_rgba = frame.convert("RGBA")
-                    raw_data = frame_rgba.tobytes()
-                    surface = pygame.image.fromstring(raw_data, frame_rgba.size, "RGBA")
-                    scaled = pygame.transform.scale(surface, target_size)
-                    self.frames.append(scaled)
+                    rgba = frame.convert("RGBA")
+                    
+                    if align_to_bottom:
+                        bbox = rgba.getbbox()
+                        if bbox:
+                            # 1. Scale the full original canvas to (tw, th) first so proportions stay 1:1
+                            scaled_full = rgba.resize((tw, th), Image.Resampling.NEAREST)
+                            
+                            # 2. Find where the colored pixels land in the scaled version
+                            scaled_bbox = scaled_full.getbbox()
+                            if scaled_bbox:
+                                cropped = scaled_full.crop(scaled_bbox)
+                                cw, ch = cropped.size
+                                
+                                # 3. Place on canvas flush against the floor without changing width
+                                canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+                                offset_x = (tw - cw) // 2
+                                offset_y = th - ch  # Push directly to bottom
+                                canvas.paste(cropped, (offset_x, offset_y), cropped)
+                                rgba = canvas
+                            else:
+                                rgba = scaled_full
+                        else:
+                            rgba = rgba.resize((tw, th), Image.Resampling.NEAREST)
+                    else:
+                        rgba = rgba.resize((tw, th), Image.Resampling.NEAREST)
+
+                    raw_data = rgba.tobytes()
+                    surface = pygame.image.frombytes(raw_data, (tw, th), "RGBA")
+                    self.frames.append(surface)
             except Exception as e:
                 print(f"Notice loading {filepath}: {e}")
 
@@ -192,41 +195,47 @@ class AnimatedGif:
 
 
 # ==============================================================================
-# SECTION 4: GAME ENTITIES (HERO, SENTRY, PROPS)
+# SECTION 4: ROBUST PLAYER PHYSICS (NO JITTER & RESPONSIVE JUMPING)
 # ==============================================================================
 class Player(pygame.sprite.Sprite):
     def __init__(self, x, y):
         super().__init__()
         base = "assets/hero.gif"
-        
-        # Checking possible filenames for attack animation
         attack_file = "assets/heroattack.gif" if os.path.exists("assets/heroattack.gif") else "assets/attack.gif"
         if not os.path.exists(attack_file):
             attack_file = base
 
+        # align_to_bottom=True ensures every single frame sits on the ground
         self.anims = {
-            "idle": AnimatedGif(base, (24, 32), frame_delay=8),
-            "walk": AnimatedGif("assets/herowalking.gif" if os.path.exists("assets/herowalking.gif") else "assets/walk.gif" if os.path.exists("assets/walk.gif") else base, (24, 32), frame_delay=5),
-            "jump": AnimatedGif("assets/herojumping.gif" if os.path.exists("assets/herojumping.gif") else "assets/jump.gif" if os.path.exists("assets/jump.gif") else base, (24, 32), frame_delay=6),
-            "crouch": AnimatedGif("assets/herocrouch.gif" if os.path.exists("assets/herocrouch.gif") else base, (24, 32), frame_delay=9999),
-            "attack": AnimatedGif(attack_file, (32, 32), frame_delay=4),
+            "idle": AnimatedGif(base, (24, 32), frame_delay=8, align_to_bottom=True),
+            "walk": AnimatedGif("assets/herowalking.gif" if os.path.exists("assets/herowalking.gif") else "assets/walk.gif" if os.path.exists("assets/walk.gif") else base, (24, 32), frame_delay=5, align_to_bottom=True),
+            "jump": AnimatedGif("assets/herojumping.gif" if os.path.exists("assets/herojumping.gif") else "assets/jump.gif" if os.path.exists("assets/jump.gif") else base, (24, 32), frame_delay=6, align_to_bottom=True),
+            "crouch": AnimatedGif("assets/herocrouch.gif" if os.path.exists("assets/herocrouch.gif") else base, (24, 32), frame_delay=9999, align_to_bottom=True),
+            "attack": AnimatedGif(attack_file, (32, 32), frame_delay=4, align_to_bottom=True),
         }
         self.rect = pygame.Rect(x, y, 24, 32)
-        self.vx = 0
-        self.vy = 0
+        self.x_pos = float(x)
+        self.y_pos = float(y)
+        self.vx = 0.0
+        self.vy = 0.0
         self.speed = 4.0
-        self.crouch_speed = 2.2
-        self.jump_force = -12.0
-        self.gravity = 0.5
-        self.on_ground = False
+        self.crouch_speed = 2.0
+        self.jump_force = -11.0
+        self.gravity = 0.55
+        self.max_fall_speed = 12.0
+        
+        # Jump buffer & coyote time to ensure jumps always register in noVNC
+        self.coyote_timer = 0
+        self.jump_buffer = 0
+        
         self.is_hidden = False
         self.facing = 1
         self.has_relic = False
         self.state = "idle"
 
         self.invulnerable_timer = 0
-        self.attack_timer = 0      # Tracks active attack frames
-        self.attack_cooldown = 0   # Prevents endless attack spam
+        self.attack_timer = 0
+        self.attack_cooldown = 0
 
     def trigger_damage(self):
         self.invulnerable_timer = 60
@@ -239,17 +248,19 @@ class Player(pygame.sprite.Sprite):
                 self.anims["attack"].current_frame = 0
 
     def get_attack_hitbox(self):
-        """Returns the weapon strike rectangle if an attack is actively executing."""
         if self.attack_timer > 0:
             if self.facing == 1:
-                return pygame.Rect(self.rect.right, self.rect.y + 4, 20, 24)
+                return pygame.Rect(self.rect.right, self.rect.y + 4, 22, 24)
             else:
-                return pygame.Rect(self.rect.left - 20, self.rect.y + 4, 20, 24)
+                return pygame.Rect(self.rect.left - 22, self.rect.y + 4, 22, 24)
         return None
+
+    def request_jump(self):
+        self.jump_buffer = 8  # Keep jump request alive for 8 frames
 
     def handle_input(self):
         keys = pygame.key.get_pressed()
-        self.vx = 0
+        self.vx = 0.0
         move_speed = self.crouch_speed if self.is_hidden else self.speed
 
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -259,9 +270,9 @@ class Player(pygame.sprite.Sprite):
             self.vx = move_speed
             self.facing = 1
 
-    def jump(self):
-        if self.on_ground:
-            self.vy = self.jump_force
+        # Continuous polling support for jump keys
+        if keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]:
+            self.request_jump()
 
     def update(self, platforms, bushes):
         if self.invulnerable_timer > 0:
@@ -270,41 +281,58 @@ class Player(pygame.sprite.Sprite):
             self.attack_timer -= 1
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
+        if self.jump_buffer > 0:
+            self.jump_buffer -= 1
 
-        # 1. Bush contact check
-        self.is_hidden = False
-        for bush in bushes:
-            if self.rect.colliderect(bush.rect):
-                self.is_hidden = True
-                break
+        # Check bush cover
+        self.is_hidden = any(self.rect.colliderect(b.rect.inflate(16, 8)) for b in bushes)
 
-        # 2. Horizontal movement & wall collision
-        self.rect.x += self.vx
+        # 1. Execute Jump if buffered and within coyote time
+        if self.jump_buffer > 0 and self.coyote_timer > 0:
+            self.vy = self.jump_force
+            self.coyote_timer = 0
+            self.jump_buffer = 0
+
+        # 2. Horizontal Movement & Collision
+        self.x_pos += self.vx
+        self.rect.x = round(self.x_pos)
         for p in platforms:
             if self.rect.colliderect(p.rect):
                 if self.vx > 0:
                     self.rect.right = p.rect.left
                 elif self.vx < 0:
                     self.rect.left = p.rect.right
+                self.x_pos = float(self.rect.x)
 
-        # 3. Vertical gravity & platform landing
-        self.vy += self.gravity
-        self.rect.y += self.vy
-        self.on_ground = False
+        # 3. Vertical Gravity & Movement
+        self.vy = min(self.vy + self.gravity, self.max_fall_speed)
+        self.y_pos += self.vy
+        self.rect.y = round(self.y_pos)
+
+        # 4. Vertical Collision Resolution
+        on_ground_now = False
         for p in platforms:
             if self.rect.colliderect(p.rect):
-                if self.vy > 0:
+                if self.vy > 0:  # Landing on platform
                     self.rect.bottom = p.rect.top
-                    self.vy = 0
-                    self.on_ground = True
-                elif self.vy < 0:
+                    self.y_pos = float(self.rect.y)
+                    self.vy = 0.0
+                    on_ground_now = True
+                elif self.vy < 0:  # Hitting ceiling
                     self.rect.top = p.rect.bottom
-                    self.vy = 0
+                    self.y_pos = float(self.rect.y)
+                    self.vy = 0.0
 
-        # 4. State Priority
+        if on_ground_now:
+            self.coyote_timer = 6  # 6 frames of jump forgiveness
+        else:
+            if self.coyote_timer > 0:
+                self.coyote_timer -= 1
+
+        # 5. Animation State Priority
         if self.attack_timer > 0:
             self.state = "attack"
-        elif not self.on_ground:
+        elif self.coyote_timer == 0:
             self.state = "jump"
         elif self.is_hidden:
             self.state = "crouch"
@@ -326,29 +354,21 @@ class Player(pygame.sprite.Sprite):
         else:
             frame = active.get_frame(flip_x=(self.facing == -1))
 
-        # Adjust position if attack sprite is slightly wider
-        target_w = frame.get_width() if frame else 24
-        target_h = frame.get_height() if frame else 32
-        px = self.rect.x - offset_x if self.facing == 1 else (self.rect.right - offset_x - target_w)
-        py = self.rect.bottom - target_h
-        
         if frame:
-            surface.blit(frame, (px, py))
+            surface.blit(frame, (self.rect.x - offset_x, self.rect.y))
         else:
             pygame.draw.rect(surface, COLOR_HERO, (self.rect.x - offset_x, self.rect.y, self.rect.w, self.rect.h))
 
-        # Draw a quick visual slash indicator if attacking with fallback rectangle
         if self.state == "attack" and not self.anims["attack"].frames:
             slash_x = self.rect.right - offset_x if self.facing == 1 else self.rect.left - offset_x - 14
             pygame.draw.rect(surface, (255, 230, 80), (slash_x, self.rect.y + 8, 14, 16))
 
 
 class Sentry(pygame.sprite.Sprite):
-    """Patrolling Spartan hoplite sentry."""
     def __init__(self, x, y, patrol_distance=64):
         super().__init__()
         base = "assets/scout.gif" if os.path.exists("assets/scout.gif") else "assets/bad guy.gif"
-        self.anim = AnimatedGif(base, (24, 32), frame_delay=8)
+        self.anim = AnimatedGif(base, (24, 32), frame_delay=8, align_to_bottom=True)
         self.rect = pygame.Rect(x, y, 24, 32)
         self.origin_x = x
         self.patrol_distance = patrol_distance
@@ -357,7 +377,7 @@ class Sentry(pygame.sprite.Sprite):
         self.view_distance = 140
 
     def update(self):
-        self.rect.x += self.speed * self.facing
+        self.rect.x += int(self.speed * self.facing)
         if abs(self.rect.x - self.origin_x) > self.patrol_distance:
             self.facing *= -1
 
@@ -387,7 +407,7 @@ class StaticProp(pygame.sprite.Sprite):
 
 
 # ==============================================================================
-# SECTION 5: DIALOGUE BOX WITH AUTOMATIC WORD-WRAPPING
+# SECTION 5: DIALOGUE BOX WITH WORD-WRAPPING
 # ==============================================================================
 class DialogueBox:
     def __init__(self, font):
@@ -466,7 +486,7 @@ def build_level_from_ascii(ascii_map):
             if char in ('#', '='):
                 platforms.append(StaticProp(px, py, TILE_SIZE, TILE_SIZE, "assets/tile.gif", COLOR_PLATFORM))
             elif char == '~':
-                bushes.append(StaticProp(px, py - 4, 48, 36, "assets/bush.gif", COLOR_BUSH))
+                bushes.append(StaticProp(px - 8, py - 4, 48, 36, "assets/bush.gif", COLOR_BUSH))
             elif char == 'x':
                 hazards.append(StaticProp(px, py + 12, TILE_SIZE, 20, "assets/hazard.gif", COLOR_HAZARD))
             elif char == '*':
@@ -566,7 +586,7 @@ def main():
 
                 elif game_state == "PLAY":
                     if event.key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
-                        hero.jump()
+                        hero.request_jump()
                     elif event.key in (pygame.K_f, pygame.K_j):
                         hero.trigger_attack()
 
@@ -580,10 +600,7 @@ def main():
             # Attack Hitbox check (Hero striking sentries)
             attack_box = hero.get_attack_hitbox()
             if attack_box:
-                defeated = []
-                for s in sentries:
-                    if attack_box.colliderect(s.rect):
-                        defeated.append(s)
+                defeated = [s for s in sentries if attack_box.colliderect(s.rect)]
                 for d in defeated:
                     sentries.remove(d)
 
@@ -592,14 +609,12 @@ def main():
                 take_damage = False
 
                 for sentry in sentries:
-                    # Sentry vision cone
                     if not hero.is_hidden and abs(sentry.rect.centery - hero.rect.centery) < 24:
                         dx = hero.rect.centerx - sentry.rect.centerx
                         if (sentry.facing == 1 and 0 < dx < sentry.view_distance) or (sentry.facing == -1 and -sentry.view_distance < dx < 0):
                             take_damage = True
                             break
 
-                # Spike / Hazard check
                 if not take_damage:
                     for haz in hazards:
                         if hero.rect.colliderect(haz.rect):
@@ -613,7 +628,6 @@ def main():
                     else:
                         hero.trigger_damage()
 
-            # Sentries patrol step
             for sentry in sentries:
                 sentry.update()
 
@@ -655,7 +669,7 @@ def main():
 
         hero.draw(screen, camera_offset_x)
 
-        # HUD
+        # In-game HUD
         if game_state in ("PLAY", "INTRO", "OUTRO"):
             act_info = STUDENT_ACTS[current_act]
             hud_status = "HIDDEN" if hero.is_hidden else "VISIBLE"
